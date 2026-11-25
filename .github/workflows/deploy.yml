@@ -1,0 +1,220 @@
+name: CI/CD Build & Deploy BackendVG (EC2 via SSM)
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Ambiente destino"
+        required: true
+        default: "production"
+        type: choice
+        options:
+          - production
+          - staging
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-backendvg-${{ inputs.environment || 'production' }}
+  cancel-in-progress: false
+
+env:
+  JAVA_VERSION: "11"
+  ARTIFACT_NAME: "APPSW.war"
+
+jobs:
+  build:
+    name: Build & Test (Java 11 / Maven)
+    runs-on: ubuntu-latest
+    outputs:
+      version_tag: ${{ steps.meta.outputs.version_tag }}
+      short_sha: ${{ steps.meta.outputs.short_sha }}
+      build_time: ${{ steps.meta.outputs.build_time }}
+    steps:
+      - name: Checkout código fuente
+        uses: actions/checkout@v4
+
+      - name: Generar metadatos de versión
+        id: meta
+        run: |
+          SHORT_SHA="${GITHUB_SHA::8}"
+          BUILD_TIME="$(date -u +%Y%m%dT%H%M%SZ)"
+          VERSION_TAG="${BUILD_TIME}-${SHORT_SHA}"
+          echo "short_sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "build_time=${BUILD_TIME}" >> "$GITHUB_OUTPUT"
+          echo "version_tag=${VERSION_TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Configurar Java ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+
+      - name: Compilar y ejecutar pruebas unitarias (mvnw clean verify)
+        run: |
+          chmod +x ./mvnw
+          ./mvnw -B clean verify
+
+      - name: Validar artefacto y generar SHA-256
+        run: |
+          test -f "target/${ARTIFACT_NAME}"
+          sha256sum "target/${ARTIFACT_NAME}" > "target/${ARTIFACT_NAME}.sha256"
+          ls -lh "target/${ARTIFACT_NAME}" "target/${ARTIFACT_NAME}.sha256"
+
+      - name: Publicar artefacto inmutable en GitHub Actions
+        uses: actions/upload-artifact@v4
+        with:
+          name: backendvg-${{ steps.meta.outputs.version_tag }}
+          path: |
+            target/APPSW.war
+            target/APPSW.war.sha256
+            deploy/scripts/deploy.sh
+            deploy/scripts/rollback.sh
+          retention-days: 14
+          if-no-files-found: error
+
+  deploy:
+    name: Deploy to EC2 via AWS SSM
+    needs: build
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment || 'production' }}
+    steps:
+      - name: Registrar tiempo de inicio
+        id: timer
+        run: echo "start_epoch=$(date +%s)" >> "$GITHUB_OUTPUT"
+
+      - name: Descargar artefacto de build
+        uses: actions/download-artifact@v4
+        with:
+          name: backendvg-${{ needs.build.outputs.version_tag }}
+          path: release
+
+      - name: Autenticar en AWS con OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-2' }}
+
+      - name: Subir artefacto inmutable y scripts a S3
+        id: s3
+        run: |
+          PREFIX="backendvg/${{ needs.build.outputs.version_tag }}"
+          S3_BUCKET="${{ vars.S3_ARTIFACTS_BUCKET }}"
+          aws s3 cp "release/target/${ARTIFACT_NAME}" "s3://${S3_BUCKET}/${PREFIX}/${ARTIFACT_NAME}"
+          aws s3 cp "release/target/${ARTIFACT_NAME}.sha256" "s3://${S3_BUCKET}/${PREFIX}/${ARTIFACT_NAME}.sha256"
+          aws s3 cp "release/deploy/scripts/deploy.sh" "s3://${S3_BUCKET}/${PREFIX}/deploy.sh"
+          aws s3 cp "release/deploy/scripts/rollback.sh" "s3://${S3_BUCKET}/${PREFIX}/rollback.sh"
+          echo "s3_prefix=s3://${S3_BUCKET}/${PREFIX}" >> "$GITHUB_OUTPUT"
+
+      - name: Ejecutar despliegue remoto en EC2 vía SSM (AWS-RunShellScript)
+        id: ssm_deploy
+        run: |
+          set -euo pipefail
+          INSTANCE_ID="${{ vars.EC2_INSTANCE_ID }}"
+          REGION="${{ vars.AWS_REGION || 'us-east-2' }}"
+          S3_PREFIX="${{ steps.s3.outputs.s3_prefix }}"
+          APP_DIR="${{ vars.APP_INSTALL_DIR || '/home/ec2-user/app' }}"
+          SPRING_PROFILE="${{ vars.SPRING_PROFILE || 'sw-prod-tr' }}"
+          USE_SYSTEMD="${{ vars.USE_SYSTEMD || 'false' }}"
+          SYSTEMD_SERVICE="${{ vars.APP_SERVICE_NAME || 'iniswtrp.service' }}"
+          HEALTH_URL="${{ vars.HEALTHCHECK_URL || 'http://127.0.0.1:80/' }}"
+          VERSION_TAG="${{ needs.build.outputs.version_tag }}"
+
+          CMD_ID=$(aws ssm send-command \
+            --region "${REGION}" \
+            --instance-ids "${INSTANCE_ID}" \
+            --document-name "AWS-RunShellScript" \
+            --comment "Deploy backendvg ${VERSION_TAG}" \
+            --timeout-seconds 300 \
+            --parameters "commands=[
+              \"set -euo pipefail\",
+              \"mkdir -p ${APP_DIR}/scripts\",
+              \"aws s3 cp ${S3_PREFIX}/deploy.sh ${APP_DIR}/scripts/deploy.sh --only-show-errors\",
+              \"aws s3 cp ${S3_PREFIX}/rollback.sh ${APP_DIR}/scripts/rollback.sh --only-show-errors\",
+              \"chmod +x ${APP_DIR}/scripts/deploy.sh ${APP_DIR}/scripts/rollback.sh\",
+              \"S3_URI='${S3_PREFIX}/${ARTIFACT_NAME}' S3_SHA_URI='${S3_PREFIX}/${ARTIFACT_NAME}.sha256' APP_INSTALL_DIR='${APP_DIR}' ARTIFACT_NAME='${ARTIFACT_NAME}' SPRING_PROFILE='${SPRING_PROFILE}' USE_SYSTEMD='${USE_SYSTEMD}' SYSTEMD_SERVICE='${SYSTEMD_SERVICE}' HEALTHCHECK_URL='${HEALTH_URL}' RELEASE_VERSION='${VERSION_TAG}' ${APP_DIR}/scripts/deploy.sh\"
+            ]" \
+            --query "Command.CommandId" \
+            --output text)
+
+          echo "SSM CommandId: ${CMD_ID}"
+
+          STATUS="InProgress"
+          for i in $(seq 1 60); do
+            sleep 5
+            STATUS=$(aws ssm get-command-invocation \
+              --region "${REGION}" \
+              --command-id "${CMD_ID}" \
+              --instance-id "${INSTANCE_ID}" \
+              --query "Status" \
+              --output text 2>/dev/null || echo "Pending")
+            echo "Polling #${i}: Status=${STATUS}"
+            if [[ "${STATUS}" =~ ^(Success|Failed|Cancelled|TimedOut|DeliveryTimedOut)$ ]]; then
+              break
+            fi
+          done
+
+          echo "=== SSM STDOUT ==="
+          STDOUT=$(aws ssm get-command-invocation --region "${REGION}" --command-id "${CMD_ID}" --instance-id "${INSTANCE_ID}" --query "StandardOutputContent" --output text || true)
+          echo "${STDOUT}"
+          echo "=== SSM STDERR ==="
+          STDERR=$(aws ssm get-command-invocation --region "${REGION}" --command-id "${CMD_ID}" --instance-id "${INSTANCE_ID}" --query "StandardErrorContent" --output text || true)
+          echo "${STDERR}"
+
+          if echo "${STDOUT}" | grep -q "ROLLBACK_STATUS=SUCCESS"; then
+            echo "rollback_result=Rollback exitoso (versión anterior restaurada)" >> "$GITHUB_OUTPUT"
+          elif echo "${STDOUT}" | grep -q "ROLLBACK_STATUS=FAILED"; then
+            echo "rollback_result=Rollback FALLIDO (requiere intervención manual)" >> "$GITHUB_OUTPUT"
+          else
+            echo "rollback_result=N/A" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "${STATUS}" != "Success" ]; then
+            echo "error_summary=SSM Status=${STATUS}" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+      - name: Notificar resultado a Microsoft Teams
+        if: always() && secrets.TEAMS_WEBHOOK_URL != ''
+        run: |
+          END_EPOCH=$(date +%s)
+          DURATION=$((END_EPOCH - ${{ steps.timer.outputs.start_epoch }}))
+          if [ "${{ job.status }}" = "success" ]; then
+            COLOR="2EB886"
+            TITLE="Despliegue EXITOSO - backendvg"
+          else
+            COLOR="E01E5A"
+            TITLE="Despliegue FALLIDO - backendvg"
+          fi
+
+          PAYLOAD=$(cat <<EOF
+          {
+            "@type": "MessageCard",
+            "@context": "http://schema.org/extensions",
+            "themeColor": "${COLOR}",
+            "summary": "${TITLE}",
+            "sections": [{
+              "activityTitle": "${TITLE}",
+              "facts": [
+                { "name": "Proyecto", "value": "backendvg (APPSW.war)" },
+                { "name": "Ambiente", "value": "${{ inputs.environment || 'production' }}" },
+                { "name": "Rama", "value": "${{ github.ref_name }}" },
+                { "name": "Commit", "value": "${{ needs.build.outputs.short_sha }}" },
+                { "name": "Autor", "value": "${{ github.actor }}" },
+                { "name": "Versión", "value": "${{ needs.build.outputs.version_tag }}" },
+                { "name": "Resultado", "value": "${{ job.status }}" },
+                { "name": "Duración", "value": "${DURATION}s" },
+                { "name": "Error", "value": "${{ steps.ssm_deploy.outputs.error_summary || 'Ninguno' }}" },
+                { "name": "Rollback", "value": "${{ steps.ssm_deploy.outputs.rollback_result || 'N/A' }}" }
+              ]
+            }]
+          }
+          EOF
+          )
+          curl -sS -H "Content-Type: application/json" -d "${PAYLOAD}" "${{ secrets.TEAMS_WEBHOOK_URL }}"
