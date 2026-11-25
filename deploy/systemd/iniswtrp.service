@@ -1,0 +1,19 @@
+[Unit]
+Description=Vierge Switch BackendVG (APPSW.war)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ec2-user
+WorkingDirectory=/home/ec2-user/app
+ExecStart=/usr/bin/java -Xms512m -Xmx2048m -Dspring.profiles.active=sw-prod-tr -jar /home/ec2-user/app/APPSW.war
+Restart=on-failure
+RestartSec=10
+SuccessExitStatus=143
+StandardOutput=append:/home/ec2-user/app/logs/appsw-stdout.log
+StandardError=append:/home/ec2-user/app/logs/appsw-stderr.log
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,27 @@
+spring.datasource.url=jdbc:postgresql://localhost:5432/swviergedb
+spring.datasource.username=swappu
+spring.jackson.default-property-inclusion = NON_EMPTY
+spring.datasource.password=HLyD_930111m@_x7
+#ss112_dFAxD21 local
+spring.jpa.hibernate.ddl-auto=update
+spring.main.allow-circular-references=true
+#spring.main.allow-bean-definition-overriding=true
+spring.jpa.properties.hibernate.dialect=org.hibernate.dialect.PostgreSQL81Dialect
+spring.profiles.active=dev
+spring.main.allow-bean-definition-overriding=true
+
+#logging.level.org.springframework = DEBUG
+spring.jackson.serialization-inclusion=NON_EMPTY
+
+server.port=8080
+
+
+sspring.security.oauth2.client.registration.cognito.client-id=3sa13618lfn4os8ad5bqbnei20
+spring.security.oauth2.client.registration.cognito.client-secret=6a494gv7im93p9ad44dq4idjc0cbbh87pmjng4q9m9fsrfcd569
+spring.security.oauth2.client.registration.cognito.authorization-grant-type=client_credentials
+spring.security.oauth2.client.registration.cognito.scope=vierge/openid
+spring.security.oauth2.client.provider.cognito.token-uri=https://viergegroup.auth.us-east-1.amazoncognito.com/oauth2/token
+spring.security.oauth2.client.provider.cognito.authorization-uri=https://viergegroup.auth.us-east-1.amazoncognito.com/oauth2/token
+spring.security.oauth2.client.provider.cognito.user-info-uri=https://viergegroup.auth.us-east-1.amazoncognito.com/oauth2/userInfo
+spring.security.oauth2.client.provider.cognito.jwk-set-uri=https://cognito-idp.us-east-1.amazonaws.com/us-east-1/.well-known/jwks.json
+spring.security.oauth2.client.provider.cognito.issuer-uri=https://cognito-idp.us-east-1.amazonaws.com/us-east-1
