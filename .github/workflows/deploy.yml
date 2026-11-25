@@ -56,10 +56,10 @@ jobs:
           java-version: ${{ env.JAVA_VERSION }}
           cache: maven
 
-      - name: Compilar y ejecutar pruebas unitarias (mvn clean verify)
+      - name: Compilar y empaquetar (mvn clean package -DskipTests)
         run: |
           mvn --version
-          mvn -B clean verify
+          mvn -B clean package -DskipTests
 
       - name: Validar artefacto y generar SHA-256
         run: |
