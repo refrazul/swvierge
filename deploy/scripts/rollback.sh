@@ -65,6 +65,19 @@ if [ "${USE_SYSTEMD}" = "true" ]; then
 else
   mkdir -p "${LOG_DIR}"
   chown -R "${APP_USER}:${APP_USER}" "${APP_INSTALL_DIR}"
+  if [ ! -x "${JAVA_BIN}" ]; then
+    FOUND_JAVA="$(runuser -u "${APP_USER}" -- bash -lc 'command -v java 2>/dev/null || true' 2>/dev/null || true)"
+    if [ -n "${FOUND_JAVA}" ] && [ -x "${FOUND_JAVA}" ]; then
+      JAVA_BIN="${FOUND_JAVA}"
+    else
+      for candidate in /usr/bin/java /usr/lib/jvm/*/bin/java /opt/*/bin/java; do
+        if [ -x "${candidate}" ]; then
+          JAVA_BIN="${candidate}"
+          break
+        fi
+      done
+    fi
+  fi
   PORT_OPT=""
   if [ -n "${SERVER_PORT}" ]; then
     PORT_OPT="-Dserver.port=${SERVER_PORT}"
@@ -83,8 +96,8 @@ fi
 sleep 5
 ELAPSED=5
 while [ "${ELAPSED}" -le "${HEALTHCHECK_TIMEOUT_SEC}" ]; do
-  HTTP_CODE="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 3 "${HEALTHCHECK_URL}" || echo "000")"
-  if [ "${HTTP_CODE}" != "000" ] && [ "${HTTP_CODE}" -lt 500 ]; then
+  HTTP_CODE="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 3 "${HEALTHCHECK_URL}" 2>/dev/null || true)"
+  if [[ "${HTTP_CODE}" =~ ^[1-4][0-9]{2}$ ]]; then
     log "Rollback completado y validado (HTTP ${HTTP_CODE})"
     exit 0
   fi

@@ -37,6 +37,26 @@ log() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] [DEPLOY] $*"
 }
 
+resolve_java_bin() {
+  if [ -n "${JAVA_BIN}" ] && [ -x "${JAVA_BIN}" ]; then
+    echo "${JAVA_BIN}"
+    return 0
+  fi
+  local found=""
+  found="$(runuser -u "${APP_USER}" -- bash -lc 'command -v java 2>/dev/null || true' 2>/dev/null || true)"
+  if [ -n "${found}" ] && [ -x "${found}" ]; then
+    echo "${found}"
+    return 0
+  fi
+  for candidate in /usr/bin/java /usr/lib/jvm/*/bin/java /opt/*/bin/java /home/"${APP_USER}"/.sdkman/candidates/java/current/bin/java; do
+    if [ -x "${candidate}" ]; then
+      echo "${candidate}"
+      return 0
+    fi
+  done
+  return 1
+}
+
 find_app_pid() {
   if [ -f "${PID_FILE}" ]; then
     local pid
@@ -103,7 +123,14 @@ start_app() {
     port_opt="-Dserver.port=${SERVER_PORT}"
   fi
 
-  log "Iniciando ${APP_FILE} con perfil=${SPRING_PROFILE} ${port_opt} como usuario=${APP_USER} (sin root)"
+  local resolved_java
+  if ! resolved_java="$(resolve_java_bin)"; then
+    log "ERROR: No se encontró el binario de Java en el EC2. Instala Java 11 (ej. sudo dnf install -y java-11-amazon-corretto-headless) o define JAVA_BIN."
+    exit 1
+  fi
+  JAVA_BIN="${resolved_java}"
+
+  log "Iniciando ${APP_FILE} con java=${JAVA_BIN} perfil=${SPRING_PROFILE} ${port_opt} como usuario=${APP_USER} (sin root)"
   if [ "$(id -un)" = "${APP_USER}" ]; then
     cd "${APP_INSTALL_DIR}"
     nohup "${JAVA_BIN}" ${JAVA_OPTS} -Dspring.profiles.active="${SPRING_PROFILE}" ${port_opt} -jar "${APP_FILE}" \
@@ -142,10 +169,10 @@ check_health() {
       fi
     fi
 
-    # Acepta cualquier respuesta HTTP < 500 (200, 302, 401, 403, 404 indican Tomcat/Spring arriba)
+    # Acepta únicamente códigos HTTP reales 1xx-4xx (200, 302, 401, 403, 404 indican Tomcat/Spring arriba)
     local http_code
-    http_code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 3 "${HEALTHCHECK_URL}" || echo "000")"
-    if [ "${http_code}" != "000" ] && [ "${http_code}" -lt 500 ]; then
+    http_code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 3 "${HEALTHCHECK_URL}" 2>/dev/null || true)"
+    if [[ "${http_code}" =~ ^[1-4][0-9]{2}$ ]]; then
       log "Health check OK (HTTP ${http_code}) tras ${elapsed}s"
       return 0
     fi
