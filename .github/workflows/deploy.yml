@@ -180,41 +180,46 @@ jobs:
             exit 1
           fi
 
-      - name: Notificar resultado a Microsoft Teams
-        if: always() && secrets.TEAMS_WEBHOOK_URL != ''
-        run: |
-          END_EPOCH=$(date +%s)
-          DURATION=$((END_EPOCH - ${{ steps.timer.outputs.start_epoch }}))
-          if [ "${{ job.status }}" = "success" ]; then
-            COLOR="2EB886"
-            TITLE="Despliegue EXITOSO - backendvg"
-          else
-            COLOR="E01E5A"
-            TITLE="Despliegue FALLIDO - backendvg"
-          fi
-
-          PAYLOAD=$(cat <<EOF
-          {
-            "@type": "MessageCard",
-            "@context": "http://schema.org/extensions",
-            "themeColor": "${COLOR}",
-            "summary": "${TITLE}",
-            "sections": [{
-              "activityTitle": "${TITLE}",
-              "facts": [
-                { "name": "Proyecto", "value": "backendvg (APPSW.war)" },
-                { "name": "Ambiente", "value": "${{ inputs.environment || 'production' }}" },
-                { "name": "Rama", "value": "${{ github.ref_name }}" },
-                { "name": "Commit", "value": "${{ needs.build.outputs.short_sha }}" },
-                { "name": "Autor", "value": "${{ github.actor }}" },
-                { "name": "Versión", "value": "${{ needs.build.outputs.version_tag }}" },
-                { "name": "Resultado", "value": "${{ job.status }}" },
-                { "name": "Duración", "value": "${DURATION}s" },
-                { "name": "Error", "value": "${{ steps.ssm_deploy.outputs.error_summary || 'Ninguno' }}" },
-                { "name": "Rollback", "value": "${{ steps.ssm_deploy.outputs.rollback_result || 'N/A' }}" }
-              ]
-            }]
-          }
-          EOF
-          )
-          curl -sS -H "Content-Type: application/json" -d "${PAYLOAD}" "${{ secrets.TEAMS_WEBHOOK_URL }}"
+      # Notificación a Microsoft Teams comentada temporalmente
+      # Nota: cuando se reactive, pasar TEAMS_WEBHOOK_URL vía `env:` (GitHub Actions no permite `secrets.*` en `if:`)
+      # - name: Notificar resultado a Microsoft Teams
+      #   if: always()
+      #   env:
+      #     TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
+      #   run: |
+      #     if [ -z "${TEAMS_WEBHOOK_URL}" ]; then exit 0; fi
+      #     END_EPOCH=$(date +%s)
+      #     DURATION=$((END_EPOCH - ${{ steps.timer.outputs.start_epoch }}))
+      #     if [ "${{ job.status }}" = "success" ]; then
+      #       COLOR="2EB886"
+      #       TITLE="Despliegue EXITOSO - backendvg"
+      #     else
+      #       COLOR="E01E5A"
+      #       TITLE="Despliegue FALLIDO - backendvg"
+      #     fi
+      #
+      #     PAYLOAD=$(cat <<EOF
+      #     {
+      #       "@type": "MessageCard",
+      #       "@context": "http://schema.org/extensions",
+      #       "themeColor": "${COLOR}",
+      #       "summary": "${TITLE}",
+      #       "sections": [{
+      #         "activityTitle": "${TITLE}",
+      #         "facts": [
+      #           { "name": "Proyecto", "value": "backendvg (APPSW.war)" },
+      #           { "name": "Ambiente", "value": "${{ inputs.environment || 'production' }}" },
+      #           { "name": "Rama", "value": "${{ github.ref_name }}" },
+      #           { "name": "Commit", "value": "${{ needs.build.outputs.short_sha }}" },
+      #           { "name": "Autor", "value": "${{ github.actor }}" },
+      #           { "name": "Versión", "value": "${{ needs.build.outputs.version_tag }}" },
+      #           { "name": "Resultado", "value": "${{ job.status }}" },
+      #           { "name": "Duración", "value": "${DURATION}s" },
+      #           { "name": "Error", "value": "${{ steps.ssm_deploy.outputs.error_summary || 'Ninguno' }}" },
+      #           { "name": "Rollback", "value": "${{ steps.ssm_deploy.outputs.rollback_result || 'N/A' }}" }
+      #         ]
+      #       }]
+      #     }
+      #     EOF
+      #     )
+      #     curl -sS -H "Content-Type: application/json" -d "${PAYLOAD}" "${TEAMS_WEBHOOK_URL}"
