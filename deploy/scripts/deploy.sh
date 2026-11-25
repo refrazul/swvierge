@@ -15,6 +15,7 @@ APP_USER="${APP_USER:-ec2-user}"
 JAVA_BIN="${JAVA_BIN:-java}"
 JAVA_OPTS="${JAVA_OPTS:--Xms512m -Xmx2048m}"
 SPRING_PROFILE="${SPRING_PROFILE:-sw-prod-tr}"
+SERVER_PORT="${SERVER_PORT:-}"
 USE_SYSTEMD="${USE_SYSTEMD:-false}"
 SYSTEMD_SERVICE="${SYSTEMD_SERVICE:-iniswtrp.service}"
 HEALTHCHECK_URL="${HEALTHCHECK_URL:-http://127.0.0.1:80/}"
@@ -89,17 +90,35 @@ start_app() {
     return 0
   fi
 
+  if [ "${APP_USER}" = "root" ]; then
+    log "ERROR: APP_USER no puede ser root; debe ejecutarse como usuario sin privilegios (ej. ec2-user)"
+    exit 1
+  fi
+
   mkdir -p "${LOG_DIR}"
-  log "Iniciando ${APP_FILE} con perfil=${SPRING_PROFILE} como usuario=${APP_USER}"
+  chown -R "${APP_USER}:${APP_USER}" "${APP_INSTALL_DIR}"
+
+  local port_opt=""
+  if [ -n "${SERVER_PORT}" ]; then
+    port_opt="-Dserver.port=${SERVER_PORT}"
+  fi
+
+  log "Iniciando ${APP_FILE} con perfil=${SPRING_PROFILE} ${port_opt} como usuario=${APP_USER} (sin root)"
   if [ "$(id -un)" = "${APP_USER}" ]; then
-    nohup "${JAVA_BIN}" ${JAVA_OPTS} -Dspring.profiles.active="${SPRING_PROFILE}" -jar "${APP_FILE}" \
-      >> "${LOG_DIR}/appsw-stdout.log" 2>> "${LOG_DIR}/appsw-stderr.log" &
+    cd "${APP_INSTALL_DIR}"
+    nohup "${JAVA_BIN}" ${JAVA_OPTS} -Dspring.profiles.active="${SPRING_PROFILE}" ${port_opt} -jar "${APP_FILE}" \
+      >> "${LOG_DIR}/appsw-stdout.log" 2>> "${LOG_DIR}/appsw-stderr.log" </dev/null &
     echo $! > "${PID_FILE}"
   else
-    sudo -u "${APP_USER}" bash -c \
-      "nohup '${JAVA_BIN}' ${JAVA_OPTS} -Dspring.profiles.active='${SPRING_PROFILE}' -jar '${APP_FILE}' >> '${LOG_DIR}/appsw-stdout.log' 2>> '${LOG_DIR}/appsw-stderr.log' & echo \$! > '${PID_FILE}'"
+    runuser -u "${APP_USER}" -- bash -lc \
+      "cd '${APP_INSTALL_DIR}' && nohup '${JAVA_BIN}' ${JAVA_OPTS} -Dspring.profiles.active='${SPRING_PROFILE}' ${port_opt} -jar '${APP_FILE}' >> '${LOG_DIR}/appsw-stdout.log' 2>> '${LOG_DIR}/appsw-stderr.log' </dev/null & echo \$! > '${PID_FILE}'"
   fi
-  log "Proceso iniciado con PID=$(cat "${PID_FILE}" 2>/dev/null || echo 'N/A')"
+
+  local started_pid
+  started_pid="$(cat "${PID_FILE}" 2>/dev/null || echo '')"
+  local started_user
+  started_user="$(ps -o user= -p "${started_pid}" 2>/dev/null | xargs || echo 'N/A')"
+  log "Proceso iniciado con PID=${started_pid:-N/A} user=${started_user}"
 }
 
 check_health() {
@@ -205,8 +224,12 @@ echo "${RELEASE_VERSION} ${ACTUAL_SHA} ${TIMESTAMP}" > "${APP_INSTALL_DIR}/CURRE
 
 start_app
 
-# 6. Validar arranque; si falla -> rollback automático y salir con error
+# 6. Validar arranque; si falla -> mostrar últimas líneas de log, rollback automático y salir con error
 if ! check_health; then
+  log "--- ÚLTIMAS LÍNEAS appsw-stderr.log ---"
+  tail -n 30 "${LOG_DIR}/appsw-stderr.log" 2>/dev/null || true
+  log "--- ÚLTIMAS LÍNEAS appsw-stdout.log ---"
+  tail -n 30 "${LOG_DIR}/appsw-stdout.log" 2>/dev/null || true
   log "FALLO EN VALIDACIÓN DE LA NUEVA VERSIÓN. Ejecutando rollback..."
   if run_rollback; then
     log "ROLLBACK_STATUS=SUCCESS (versión anterior restaurada y saludable)"

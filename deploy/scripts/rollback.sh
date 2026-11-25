@@ -11,6 +11,7 @@ APP_USER="${APP_USER:-ec2-user}"
 JAVA_BIN="${JAVA_BIN:-java}"
 JAVA_OPTS="${JAVA_OPTS:--Xms512m -Xmx2048m}"
 SPRING_PROFILE="${SPRING_PROFILE:-sw-prod-tr}"
+SERVER_PORT="${SERVER_PORT:-}"
 USE_SYSTEMD="${USE_SYSTEMD:-false}"
 SYSTEMD_SERVICE="${SYSTEMD_SERVICE:-iniswtrp.service}"
 HEALTHCHECK_URL="${HEALTHCHECK_URL:-http://127.0.0.1:80/}"
@@ -63,13 +64,19 @@ if [ "${USE_SYSTEMD}" = "true" ]; then
   sudo systemctl start "${SYSTEMD_SERVICE}"
 else
   mkdir -p "${LOG_DIR}"
+  chown -R "${APP_USER}:${APP_USER}" "${APP_INSTALL_DIR}"
+  PORT_OPT=""
+  if [ -n "${SERVER_PORT}" ]; then
+    PORT_OPT="-Dserver.port=${SERVER_PORT}"
+  fi
   if [ "$(id -un)" = "${APP_USER}" ]; then
-    nohup "${JAVA_BIN}" ${JAVA_OPTS} -Dspring.profiles.active="${SPRING_PROFILE}" -jar "${APP_FILE}" \
-      >> "${LOG_DIR}/appsw-stdout.log" 2>> "${LOG_DIR}/appsw-stderr.log" &
+    cd "${APP_INSTALL_DIR}"
+    nohup "${JAVA_BIN}" ${JAVA_OPTS} -Dspring.profiles.active="${SPRING_PROFILE}" ${PORT_OPT} -jar "${APP_FILE}" \
+      >> "${LOG_DIR}/appsw-stdout.log" 2>> "${LOG_DIR}/appsw-stderr.log" </dev/null &
     echo $! > "${PID_FILE}"
   else
-    sudo -u "${APP_USER}" bash -c \
-      "nohup '${JAVA_BIN}' ${JAVA_OPTS} -Dspring.profiles.active='${SPRING_PROFILE}' -jar '${APP_FILE}' >> '${LOG_DIR}/appsw-stdout.log' 2>> '${LOG_DIR}/appsw-stderr.log' & echo \$! > '${PID_FILE}'"
+    runuser -u "${APP_USER}" -- bash -lc \
+      "cd '${APP_INSTALL_DIR}' && nohup '${JAVA_BIN}' ${JAVA_OPTS} -Dspring.profiles.active='${SPRING_PROFILE}' ${PORT_OPT} -jar '${APP_FILE}' >> '${LOG_DIR}/appsw-stdout.log' 2>> '${LOG_DIR}/appsw-stderr.log' </dev/null & echo \$! > '${PID_FILE}'"
   fi
 fi
 
