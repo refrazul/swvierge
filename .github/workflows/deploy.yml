@@ -95,11 +95,36 @@ jobs:
           name: backendvg-${{ needs.build.outputs.version_tag }}
           path: release
 
+      - name: Verificar configuración OIDC (sin exponer secretos)
+        env:
+          CHECK_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+          CHECK_REGION: ${{ vars.AWS_REGION || 'us-east-2' }}
+        run: |
+          echo "Repository : ${{ github.repository }}"
+          echo "Ref        : ${{ github.ref }}"
+          echo "Environment: ${{ inputs.environment || 'production' }}"
+          echo "AWS_REGION : ${CHECK_REGION}"
+          if [ -z "${CHECK_ROLE_ARN}" ]; then
+            echo "::error::El secret AWS_ROLE_ARN está vacío. Verifícalo en Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+          echo "AWS_ROLE_ARN length: ${#CHECK_ROLE_ARN} (esperado: 65)"
+          if [[ "${CHECK_ROLE_ARN}" != arn:aws:iam::*:role/* ]]; then
+            echo "::error::AWS_ROLE_ARN no tiene el formato esperado (arn:aws:iam::<ACCOUNT>:role/<ROLE_NAME>)."
+            exit 1
+          fi
+          echo "Formato de AWS_ROLE_ARN: OK"
+          # Mostrar solo los claims no-sensibles (aud y sub) del JWT OIDC para validar el match con IAM
+          OIDC_JWT=$(curl -sS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com" | jq -r '.value')
+          echo "OIDC claims (aud/sub):"
+          echo "${OIDC_JWT}" | cut -d'.' -f2 | tr '_-' '/+' | awk '{ while (length($0) % 4 != 0) $0 = $0 "="; print }' | base64 -d | jq '{aud, sub, repository, ref, environment}'
+
       - name: Autenticar en AWS con OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION || 'us-east-2' }}
+          role-skip-session-tagging: true
 
       - name: Subir artefacto inmutable y scripts a S3
         id: s3
